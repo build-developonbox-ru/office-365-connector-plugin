@@ -177,23 +177,15 @@ public final class Office365ConnectorWebhookNotifier {
     }
     
     private static Card createJobStartedCard(Run run, TaskListener listener) {
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z");
+        String status = "Build Started";
+        String summary = String.format("%s build #%d: %s", getDisplayName(run), run.getNumber(), status);
+        String activityTitle = String.format("Notification from %s #%d: %s", getEscapedDisplayName(run), run.getNumber(), status);
 
-        List<Facts> factsList = new ArrayList<>();
-        factsList.add(new Facts("Status", "Build Started"));
-        factsList.add(new Facts("Start Time", sdf.format(run.getStartTimeInMillis())));
-
-        addCauses(run, listener, factsList);
-        
-        String activityTitle = "Update from build " + run.getParent().getName() + ".";
-        String activitySubtitle = "Latest status of build #" + run.getNumber();
-        Sections section = new Sections(activityTitle, activitySubtitle, factsList);
-
+        Sections sections = new Sections(activityTitle, null, null);
         List<Sections> sectionList = new ArrayList<>();
-        sectionList.add(section);
-        
-        String summary = run.getParent().getName() + ": Build #" + run.getNumber() + " Started";
-        Card card = new Card(summary, sectionList);
+        sectionList.add(sections);
+
+        Card card = new Card(summary, null);
         addPotentialAction(run, card);
 
         return card;
@@ -201,109 +193,58 @@ public final class Office365ConnectorWebhookNotifier {
     
     private static Card createJobCompletedCard(Run run, TaskListener listener) {
         List<Facts> factsList = new ArrayList<>();
-        SimpleDateFormat sdf = new SimpleDateFormat("yyyy-MM-dd HH:mm:ss z");
-        String summary = run.getParent().getName() + ": Build #" + run.getNumber();
-        
-        Facts event = new Facts("Status");
-        factsList.add(event);
-        factsList.add(new Facts("Start Time", sdf.format(run.getStartTimeInMillis())));
-             
-        Result result = run.getResult();
-        if (result != null) {
-            long currentBuildCompletionTime = run.getStartTimeInMillis() + run.getDuration();
-            factsList.add(new Facts("Completion Time", sdf.format(currentBuildCompletionTime)));
+        String status = null;
 
-            AbstractTestResultAction<?> action = run.getAction(AbstractTestResultAction.class);
-            if (action != null) {
-                factsList.add(new Facts("Total Tests", action.getTotalCount()));
-                factsList.add(new Facts("Total Passed Tests", action.getTotalCount() - action.getFailCount() - action.getSkipCount()));
-                factsList.add(new Facts("Total Failed Tests", action.getFailCount()));
-                factsList.add(new Facts("Total Skipped Tests", action.getSkipCount()));
-            } 
+        // result might be null only for ongoing job - check documentation of Run.getCompletedResult()
+        // but based on issue #133 it may happen that result for completed job is null
+        Result result = getCompletedResult(run);
 
-            String status = null;
-            Run previousBuild = run.getPreviousBuild();
-            Result previousResult = (previousBuild != null) ? previousBuild.getResult() : Result.SUCCESS;
-            AbstractBuild failingSinceRun = null;
-            Run rt;
-            rt = run.getPreviousNotFailedBuild();
-            try {
-                if(rt != null) {
-                    failingSinceRun = (AbstractBuild) rt.getNextBuild();
-                } else {
-                    failingSinceRun = (AbstractBuild) run.getParent().getFirstBuild();
-                }
-            } catch (Throwable e) {
-                //listener.getLogger().println(e.getMessage());
-            }
-            
-            if (result == Result.SUCCESS && (previousResult == Result.FAILURE || previousResult == Result.UNSTABLE)) {
-                status = "Back to Normal";
-                summary += " Back to Normal";
-
-                if (failingSinceRun != null) {
-                    long diffInSeconds = (currentBuildCompletionTime / 1000) - (failingSinceRun.getStartTimeInMillis() / 1000);
-                    long diff[] = new long[] { 0, 0, 0, 0 };
-                    /* sec */diff[3] = (diffInSeconds >= 60 ? diffInSeconds % 60 : diffInSeconds);
-                    /* min */diff[2] = (diffInSeconds = (diffInSeconds / 60)) >= 60 ? diffInSeconds % 60 : diffInSeconds;
-                    /* hours */diff[1] = (diffInSeconds = (diffInSeconds / 60)) >= 24 ? diffInSeconds % 24 : diffInSeconds;
-                    /* days */diff[0] = (diffInSeconds = (diffInSeconds / 24));
-                    String backToNormalTimeValue = String.format(
-                                                    "%d day%s, %d hour%s, %d minute%s, %d second%s",
-                                                    diff[0],
-                                                    diff[0] > 1 ? "s" : "",
-                                                    diff[1],
-                                                    diff[1] > 1 ? "s" : "",
-                                                    diff[2],
-                                                    diff[2] > 1 ? "s" : "",
-                                                    diff[3],
-                                                    diff[3] > 1 ? "s" : "");
-                    factsList.add(new Facts("Back To Normal Time", backToNormalTimeValue));
-                }
-            } else if (result == Result.FAILURE && failingSinceRun != null) {
-                if (previousResult == Result.FAILURE) {
-                    status = "Repeated Failure";
-                    summary += " Repeated Failure";
-
-                    factsList.add(new Facts("Failing since build", failingSinceRun.number));
-                    factsList.add(new Facts("Failing since time", sdf.format(failingSinceRun.getStartTimeInMillis() + failingSinceRun.getDuration())));
-                } else {
-                    status = "Build Failed";
-                    summary += " Failed";
-                }
-            } else if (result == Result.ABORTED) {
-                status = "Build Aborted";
-                summary += " Aborted";
-            } else if (result == Result.UNSTABLE) {
-                status = "Build Unstable";
-                summary += " Unstable";
-            } else if (result == Result.SUCCESS) {
-                status = "Build Success";
-                summary += " Success";
-            } else if (result == Result.NOT_BUILT) {
-                status = "Not Built";
-                summary += " Not Built";
+        Run previousBuild = run.getPreviousBuild();
+        Result previousResult = (previousBuild != null) ? previousBuild.getResult() : Result.SUCCESS;
+        AbstractBuild failingSinceRun = null;
+        Run rt;
+        rt = run.getPreviousNotFailedBuild();
+        try {
+            if(rt != null) {
+                failingSinceRun = (AbstractBuild) rt.getNextBuild();
             } else {
-                status = result.toString();
-                summary += " " + status;
+                failingSinceRun = (AbstractBuild) run.getParent().getFirstBuild();
             }
-
-            event.setValue(status);
-        } else {
-            event.setValue(" Completed");
-            summary += " Completed";
+        } catch (Throwable e) {
+            //listener.getLogger().println(e.getMessage());
         }
-            
-        addCauses(run, listener, factsList);
         
-        String activityTitle = "Update from build " + run.getParent().getName() + ".";
-        String activitySubtitle = "Latest status of build #" + run.getNumber();
-        Sections section = new Sections(activityTitle, activitySubtitle, factsList);
+        if (result == Result.SUCCESS && (previousResult == Result.FAILURE || previousResult == Result.UNSTABLE)) {
+            status = "Back to Success";
+
+        } else if (result == Result.FAILURE && failingSinceRun != null) {
+            if (previousResult == Result.FAILURE) {
+                status = "Repeated Failure";
+                factsList.add(new Facts("Failing since", String.format("build #%d", failingSinceRun.number)));
+            } else {
+                status = "Build Failed";
+            }
+        } else if (result == Result.ABORTED) {
+            status = "Build Aborted";
+        } else if (result == Result.UNSTABLE) {
+            status = "Build Unstable";
+        } else if (result == Result.SUCCESS) {
+            status = "Build Success";
+        } else if (result == Result.NOT_BUILT) {
+            status = "Not Built";
+        } else {
+            status = result.toString();
+        }
+
+        String summary = String.format("%s build #%d: %s", getDisplayName(run), run.getNumber(), status);    
+        String activityTitle = String.format("Notification from %s #%d: %s", getEscapedDisplayName(run), run.getNumber(), status);
+        Sections sections = new Sections(activityTitle, null, factsList);
 
         List<Sections> sectionList = new ArrayList<>();
-        sectionList.add(section);
+        sectionList.add(sections);
         
         Card card = new Card(summary, sectionList);
+        card.setThemeColor(result.color.getHtmlBaseColor());
         addPotentialAction(run, card);
 
         return card;
@@ -317,7 +258,7 @@ public final class Office365ConnectorWebhookNotifier {
             factsList.add(new Facts("Status", "Running"));
         }
         
-        String activityTitle = "Update from build " + run.getParent().getName() + "(" + run.getNumber() + ")";
+        String activityTitle = "Notification from " + run.getParent().getName() + "(" + run.getNumber() + ")";
         Sections section = new Sections(activityTitle, stepParameters.getMessage(), factsList);
         
         List<Sections> sectionList = new ArrayList<>();
@@ -457,5 +398,30 @@ public final class Office365ConnectorWebhookNotifier {
                 addScmDetails(run, listener, factsList);
             }
         }
+    }
+
+    /**
+     * Returns escaped name of the job presented as display name with parent name such as folder.
+     * Parent is needed for multi-branch pipelines and for cases when job
+     */
+    private static String getEscapedDisplayName(Run run) {
+        String displayName = getDisplayName(run);
+        // escape special characters so the summary is not formatted
+        // when the build name contains special characters
+        // https://www.markdownguide.org/basic-syntax#characters-you-can-escape
+        return displayName.replaceAll("([*_#-])", "\\\\$1");
+    }
+
+    /**
+     * Returns name of the project.
+     */
+    private static String getDisplayName(Run run) {
+        return run.getParent().getFullDisplayName();
+    }
+
+    // this is tricky way to avoid findBugs NP_NULL_ON_SOME_PATH_FROM_RETURN_VALUE
+    // which is not true in that case
+    private static Result getCompletedResult(Run run) {
+        return run.getResult() == null ? Result.SUCCESS : run.getResult();
     }
 }
